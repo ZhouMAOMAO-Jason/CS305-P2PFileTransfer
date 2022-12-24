@@ -3,6 +3,8 @@ import sys
 import os
 import time
 
+import numpy as np
+
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import select
 import util.simsocket as simsocket
@@ -35,8 +37,9 @@ sessions = {}
 
 class sender_rdt:
     def __init__(self, window_size):
-        self.window_size = window_size
-        self.window = [0] * window_size
+        self.window_size = 1
+        self.window = [0] * 1
+        self.ssthresh = 64
         self.base = 1
         self.next_seq = 1
         self.buffer = []
@@ -46,6 +49,37 @@ class sender_rdt:
         self.devRTT = 0
         self.alpha = 0.125
         self.beta = 0.25
+        self.dup_ack = 0
+        self.congestion = False
+
+    def congestion_control(self, is_dup, timeout):
+        # 要先判断收到的包是不是duplicate的，以及是否传输超时
+        if is_dup:
+            self.dup_ack += 1
+
+        if not self.congestion:
+            #  超时重传或收到三个多余的ack包
+            if self.dup_ack >= 3 or timeout:
+                self.ssthresh = max(self.window_size // 2, 2)
+                self.window_size = 1
+                self.window = [0] * self.window_size
+                # Todo:重传
+            # 正常情况
+            elif self.window_size < self.ssthresh:
+                self.window_size += 1
+                self.window = [0] * self.window_size
+            else:
+                self.congestion = True
+
+        else:
+            if self.dup_ack >= 3 or timeout:
+                self.ssthresh = max(self.window_size // 2, 2)
+                self.window_size = 1
+                self.window = [0] * self.window_size
+                self.congestion = False
+                # Todo:重传
+            self.window_size = np.floor(self.window_size + (1 / self.window_size))
+            self.window = [0] * self.window_size
 
     def rdt_send(self):
         if (self.next_seq < self.base + self.window_size):
@@ -185,7 +219,7 @@ def process_download(sock, chunkfile, outputfile):
     # |2byte  header len  |2byte pkt len |
     # |      4byte  seq                  |
     # |      4byte  ack                  |
-    whohas_header = struct.pack("!HBBHHII", 52305,35, 0, HEADER_LEN, HEADER_LEN+len(download_hash), 0, 0)
+    whohas_header = struct.pack("!HBBHHII", 52305, 35, 0, HEADER_LEN, HEADER_LEN + len(download_hash), 0, 0)
     whohas_pkt = whohas_header + download_hash
 
     # Step3: flooding whohas to all peers in peer list
@@ -228,12 +262,11 @@ def process_inbound_udp(sock):
             session_object = sender_rdt(20)
             sessions[chunkhash_str] = session_object
 
-
         print(f"whohas: {chunkhash_str}, has: {list(config.haschunks.keys())}")
         if chunkhash_str in config.haschunks:
-        # send back IHAVE pkt
-            ihave_header = struct.pack("!HBBHHII", 52305, 35, 1, HEADER_LEN, HEADER_LEN+len(whohas_chunk_hash), 0, 0)
-            ihave_pkt = ihave_header+whohas_chunk_hash
+            # send back IHAVE pkt
+            ihave_header = struct.pack("!HBBHHII", 52305, 35, 1, HEADER_LEN, HEADER_LEN + len(whohas_chunk_hash), 0, 0)
+            ihave_pkt = ihave_header + whohas_chunk_hash
             sock.sendto(ihave_pkt, from_addr)
     elif Type == 1:
         # received an IHAVE pkt
@@ -300,8 +333,8 @@ def process_inbound_udp(sock):
         cur_session = sessions[hash]
         recv_time = time.time()
         sampleRTT = recv_time - cur_session.timer
-        cur_session.estimatedRTT = (1 - cur_session.alpha) * cur_session.estimatedRTT+ \
-                                         cur_session.alpha * sampleRTT
+        cur_session.estimatedRTT = (1 - cur_session.alpha) * cur_session.estimatedRTT + \
+                                   cur_session.alpha * sampleRTT
         cur_session.devRTT = (1 - cur_session.beta) * cur_session.devRTT + cur_session.beta * (
             abs(sampleRTT - cur_session.estimatedRTT))
         cur_session.timeout_interval = cur_session.estimatedRTT + 4 * cur_session.devRTT
@@ -309,7 +342,7 @@ def process_inbound_udp(sock):
         ack_num = Ack
         print(ack_num)
         print(cur_session.base)
-        cur_session.window[ack_num-cur_session.base] = 1
+        cur_session.window[ack_num - cur_session.base] = 1
         if (ack_num) * MAX_PAYLOAD >= CHUNK_DATA_SIZE:
             # finished
             print(f"finished sending {ex_sending_chunkhash}")
@@ -325,19 +358,19 @@ def process_inbound_udp(sock):
 
             if ack_num == cur_session.base:
                 x = 0
-                for i in range(len(cur_session.window)): #看看window的情况
+                for i in range(len(cur_session.window)):  # 看看window的情况
                     if cur_session.window[i] == 1:
                         x += 1
                     else:
                         break
-                if x == 0: #一个ack都还没收到
+                if x == 0:  # 一个ack都还没收到
                     pass
-                elif x == cur_session.window_size: #ack满了
+                elif x == cur_session.window_size:  # ack满了
                     cur_session.window_size[cur_session.base] += cur_session.window_size
                     cur_session.window = [0] * cur_session.window_size
                 else:  # 0就先不用管这个ack了，但后面fast retransmission可能用到
                     left = copy.deepcopy(cur_session.window[x:])
-                    zeros = [0] * ( cur_session.window_size- len(left) )
+                    zeros = [0] * (cur_session.window_size - len(left))
                     cur_session.window = left + zeros
 
             if (cur_session.next_seq < cur_session.base + cur_session.window_size):
@@ -351,7 +384,6 @@ def process_inbound_udp(sock):
                 if cur_session.base == cur_session.next_seq:
                     cur_session.timer = time.time()  # start_timer
                     cur_session.next_seq += 1
-
 
 
 def process_user_input(sock):
