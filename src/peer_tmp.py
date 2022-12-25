@@ -315,10 +315,6 @@ def process_inbound_udp(sock):
         # received a DATA pkt
         ex_received_chunk[ex_downloading_chunkhash] += data
 
-        #
-        print('rec_seq',Seq,'len(ex_received_chunk[ex_downloading_chunkhash])', len(ex_received_chunk[ex_downloading_chunkhash]))
-        #
-
         # send back ACK
         ack_pkt = struct.pack("!HBBHHII", 52305, 35,  4,
             HEADER_LEN, HEADER_LEN, 0, Seq)
@@ -349,10 +345,6 @@ def process_inbound_udp(sock):
                 print("Congrats! You have completed the example!")
             else:
                 print("Example fails. Please check the example files carefully.")
-        ####
-        # else:
-        #     print('len(ex_received_chunk[ex_downloading_chunkhash])',len(ex_received_chunk[ex_downloading_chunkhash]))
-        #     print(CHUNK_DATA_SIZE)
     elif Type == 4:
 
         ########
