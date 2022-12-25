@@ -36,8 +36,8 @@ timeout = 20
 
 class sender_rdt:
     def __init__(self, window_size):
-        self.window_size = 1
-        self.window = [0] * 1
+        self.window_size = 20
+        self.window = [0] * window_size
         self.ssthresh = 64
         self.base = 1
         self.next_seq = 1
@@ -191,10 +191,13 @@ class receiver_rdt():
     def make_pkt(self, expected_seq, ack):
         return None
 
+session_object = sender_rdt(20)
+
 if timeout!=0:
-    session_object = sender_rdt(timeout)
+    session_object.timeout_interval = timeout
 else:
-    session_object = sender_rdt(20)
+    session_object.timeout_interval = 1
+
 sessions['3b68110847941b84e8d05417a5b2609122a56314'] = session_object
 
 def process_download(sock, chunkfile, outputfile):
@@ -250,7 +253,8 @@ def process_inbound_udp(sock):
 
     # 判断是否超时，超时的话要重传
     hash = '3b68110847941b84e8d05417a5b2609122a56314'
-    print(hash)
+    # print(sessions[hash].window)
+    resnd = 0
     for curr in sessions:  # 这里将来要改
         curr = sessions[hash]  # 这里将来要改
         time_cost = time.time() - curr.timer
@@ -292,13 +296,12 @@ def process_inbound_udp(sock):
         get_pkt = get_header+get_chunk_hash
         sock.sendto(get_pkt, from_addr)
     elif Type == 2:
-        # received a GET pkt
-        chunk_data = config.haschunks[ex_sending_chunkhash][:MAX_PAYLOAD]
-
-        # send back DATA
-        data_header = struct.pack("!HBBHHII", 52305, 35, 3,
-            HEADER_LEN, HEADER_LEN, 1, 0)
-        sock.sendto(data_header+chunk_data, from_addr)
+        # # received a GET pkt
+        # chunk_data = config.haschunks[ex_sending_chunkhash][:MAX_PAYLOAD]
+        # # send back DATA
+        # data_header = struct.pack("!HBBHHII", 52305, 35, 3,
+        #     HEADER_LEN, HEADER_LEN, 1, 0)
+        # sock.sendto(data_header+chunk_data, from_addr)
 
         #######
         sessions[hash].timer = time.time()
@@ -307,9 +310,12 @@ def process_inbound_udp(sock):
             right = min((i + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
             next_data = config.haschunks[ex_sending_chunkhash][left: right]
             # send next data
-            data_header = struct.pack("!HBBHHII", 52305, 35, 3, HEADER_LEN, HEADER_LEN, 1, 0)
+            data_header = struct.pack("!HBBHHII", 52305, 35, 3, HEADER_LEN, HEADER_LEN + len(next_data),
+                                          i+1, 0)
             sock.sendto(data_header + next_data, from_addr)
             sessions[hash].next_seq += 1
+            print(i)
+            # time.sleep(0.1)
         #######
     elif Type == 3:
         # received a DATA pkt
@@ -372,6 +378,7 @@ def process_inbound_udp(sock):
         ######
         print('ack',ack_num)
         cur_session.window[ack_num - cur_session.base] = 1
+        print(cur_session.window)
         ######
 
         if (ack_num)*MAX_PAYLOAD >= CHUNK_DATA_SIZE:
@@ -386,7 +393,6 @@ def process_inbound_udp(sock):
             # data_header = struct.pack("!HBBHHII", 52305, 35, 3,
             #     HEADER_LEN, HEADER_LEN+len(next_data), ack_num+1, 0)
             # sock.sendto(data_header+next_data, from_addr)
-
 
             #######
             if ack_num == cur_session.base:
@@ -436,7 +442,7 @@ def peer_run(config):
     timeout = config.timeout
     try:
         while True:
-            ready = select.select([sock, sys.stdin], [], [], 0.1)
+            ready = select.select([sock, sys.stdin], [], [], 0.01)
             read_ready = ready[0]
             if len(read_ready) > 0:
                 if sock in read_ready:
