@@ -31,7 +31,7 @@ ex_downloading_chunkhash = ""
 snd_hash = []
 rcv_hash = []
 sessions = {}
-timeout = 0
+timeout = 20
 
 
 class sender_rdt:
@@ -313,10 +313,10 @@ def process_inbound_udp(sock):
         #######
     elif Type == 3:
         # received a DATA pkt
-        ex_received_chunk[ex_downloading_chunkhash] += data
+        ex_received_chunk[ex_downloading_chunkhash] += data  #这个seq是否已经收到了
 
         #
-        print('rec_seq',Seq,'len(ex_received_chunk[ex_downloading_chunkhash])', len(ex_received_chunk[ex_downloading_chunkhash]))
+        # print('rec_seq',Seq,'len(ex_received_chunk[ex_downloading_chunkhash])', len(ex_received_chunk[ex_downloading_chunkhash]))
         #
 
         # send back ACK
@@ -350,9 +350,9 @@ def process_inbound_udp(sock):
             else:
                 print("Example fails. Please check the example files carefully.")
         ####
-        # else:
-        #     print('len(ex_received_chunk[ex_downloading_chunkhash])',len(ex_received_chunk[ex_downloading_chunkhash]))
-        #     print(CHUNK_DATA_SIZE)
+        else:
+            print('rec_seq',Seq,'len(ex_received_chunk[ex_downloading_chunkhash])', len(ex_received_chunk[ex_downloading_chunkhash]))
+            print(CHUNK_DATA_SIZE)
     elif Type == 4:
 
         ########
