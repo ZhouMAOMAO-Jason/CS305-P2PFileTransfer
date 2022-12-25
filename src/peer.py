@@ -11,6 +11,7 @@ import util.bt_utils as bt_utils
 import hashlib
 import argparse
 import pickle
+from typing import Dict
 
 """
 This is CS305 project skeleton code.
@@ -27,6 +28,9 @@ ex_output_file = None
 ex_received_chunk = dict()
 ex_sending_chunkhash = ""
 ex_downloading_chunkhash = ""
+
+# 当前peer收到的所有chunk的所有包，格式为{chunkhash: {sequence: data}}
+received_chunks: Dict[str, Dict[int, bytes]] = dict() # dict[str, dict[int, bytes]]
 
 snd_hash = []
 rcv_hash = []
@@ -169,7 +173,7 @@ class sender_rdt:
         return 0
 
 
-class receiver_rdt():
+class receiver_rdt:
     def __init__(self, ):
         self.buffer = []
         self.timer = 0
@@ -200,42 +204,44 @@ else:
 
 sessions['3b68110847941b84e8d05417a5b2609122a56314'] = session_object
 
+
 def process_download(sock, chunkfile, outputfile):
     '''
     if DOWNLOAD is used, the peer will keep getting files until it is done
     '''
-    # print('PROCESS GET SKELETON CODE CALLED.  Fill me in! I\'ve been doing! (', chunkfile, ',     ', outputfile, ')')
     global ex_output_file
-    global ex_received_chunk
+    # global ex_received_chunk
+    global received_chunks
     global ex_downloading_chunkhash
 
     ex_output_file = outputfile
-    # Step 1: read chunkhash to be downloaded from chunkfile
-    download_hash = bytes()
+    # download_hash = bytes()
+
+    content = ''
+
     with open(chunkfile, 'r') as cf:
-        index, datahash_str = cf.readline().strip().split(" ")
-        ex_received_chunk[datahash_str] = bytes()
+        content = cf.readlines()
+
+    # 有多个download_hash的情况
+
+    for line in content:
+        index, datahash_str = line.strip().split(" ")
+        # ex_received_chunk[datahash_str] = bytes()
+        received_chunks[datahash_str] = dict()
         ex_downloading_chunkhash = datahash_str
 
-        # hex_str to bytes
         datahash = bytes.fromhex(datahash_str)
-        download_hash = download_hash + datahash
 
-    # Step2: make WHOHAS pkt
-    # |2byte magic|1byte type |1byte team|
-    # |2byte  header len  |2byte pkt len |
-    # |      4byte  seq                  |
-    # |      4byte  ack                  |
-    whohas_header = struct.pack(
-        "!HBBHHII", 52305, 35, 0, HEADER_LEN, HEADER_LEN+len(download_hash), 0, 0)
-    whohas_pkt = whohas_header + download_hash
+        whohas_header = struct.pack(
+            "!HBBHHII", 52305, 35, 0, HEADER_LEN, HEADER_LEN+len(datahash), 0, 0)
+        whohas_pkt = whohas_header + datahash
 
-    # Step3: flooding whohas to all peers in peer list
-    peer_list = config.peers
-    for p in peer_list:
-        id, host, port = p
-        if int(id) != config.identity:
-            sock.sendto(whohas_pkt, (host, int(port)))
+        # 广播给所有的peer
+        peer_list = config.peers
+        for p in peer_list:
+            id, host, port = p
+            if int(id) != config.identity:
+                sock.sendto(whohas_pkt, (host, int(port)))
 
 
 def process_inbound_udp(sock):
@@ -244,6 +250,7 @@ def process_inbound_udp(sock):
     global ex_received_chunk
     global ex_downloading_chunkhash
     global ex_sending_chunkhash
+    global received_chunks
     # Receive pkt
     pkt, from_addr = sock.recvfrom(BUF_SIZE)
     Magic, Team, Type, hlen, plen, Seq, Ack = struct.unpack(
@@ -318,34 +325,50 @@ def process_inbound_udp(sock):
             # time.sleep(0.1)
         #######
     elif Type == 3:
-        # received a DATA pkt
-        ex_received_chunk[ex_downloading_chunkhash] += data  #这个seq是否已经收到了
+        # 收到 DATA
+        # ex_received_chunk[ex_downloading_chunkhash] += data
 
-        #
-        # print('rec_seq',Seq,'len(ex_received_chunk[ex_downloading_chunkhash])', len(ex_received_chunk[ex_downloading_chunkhash]))
-        #
+        # 如果当前序列号为Seq的包已经被收过了
+        if Seq in received_chunks[ex_downloading_chunkhash]:
+            return
+        
+        received_chunks[ex_downloading_chunkhash][Seq] = data
 
         # send back ACK
-        ack_pkt = struct.pack("!HBBHHII", 52305, 35,  4,
+        ack_pkt = struct.pack("!HBBHHII", 52305, 35,  4, 
             HEADER_LEN, HEADER_LEN, 0, Seq)
         sock.sendto(ack_pkt, from_addr)
 
-        # see if finished
-        if len(ex_received_chunk[ex_downloading_chunkhash]) == CHUNK_DATA_SIZE:
-            # finished downloading this chunkdata!
-            # dump your received chunk to file in dict form using pickle
+        # if len(ex_received_chunk[ex_downloading_chunkhash]) == CHUNK_DATA_SIZE:
+        # 判断当前chunk下载是否结束
+        # 计算收到的总长度
+
+        total_len = 0
+        all_packets = received_chunks[ex_downloading_chunkhash]
+
+        for seq, packet_data in all_packets.items():
+            total_len += len(packet_data)
+        
+        if total_len == CHUNK_DATA_SIZE:
+            # 先按照seq顺序将data拼接好
+            final_data = bytes()
+            sorted_packets = sorted(received_chunks[ex_downloading_chunkhash])
+            for seq in sorted_packets:
+                final_data += received_chunks[ex_downloading_chunkhash][seq]
+            # 保存下载文件
             with open(ex_output_file, "wb") as wf:
-                pickle.dump(ex_received_chunk, wf)
+                # pickle.dump(ex_received_chunk, wf)
+                pickle.dump(final_data, wf)
 
-            # add to this peer's haschunk:
-            config.haschunks[ex_downloading_chunkhash] = ex_received_chunk[ex_downloading_chunkhash]
+            # 将该文件加入到 haschunks中
+            # config.haschunks[ex_downloading_chunkhash] = ex_received_chunk[ex_downloading_chunkhash]
+            config.haschunks[ex_downloading_chunkhash] = final_data
 
-            # you need to print "GOT" when finished downloading all chunks in a DOWNLOAD file
             print(f"GOT {ex_output_file}")
 
-            # The following things are just for illustration, you do not need to print out in your design.
             sha1 = hashlib.sha1()
-            sha1.update(ex_received_chunk[ex_downloading_chunkhash])
+            # sha1.update(ex_received_chunk[ex_downloading_chunkhash])
+            sha1.update(final_data)
             received_chunkhash_str = sha1.hexdigest()
             print(f"Expected chunkhash: {ex_downloading_chunkhash}")
             print(f"Received chunkhash: {received_chunkhash_str}")
@@ -355,10 +378,6 @@ def process_inbound_udp(sock):
                 print("Congrats! You have completed the example!")
             else:
                 print("Example fails. Please check the example files carefully.")
-        ####
-        else:
-            print('rec_seq',Seq,'len(ex_received_chunk[ex_downloading_chunkhash])', len(ex_received_chunk[ex_downloading_chunkhash]))
-            print(CHUNK_DATA_SIZE)
     elif Type == 4:
 
         ########
