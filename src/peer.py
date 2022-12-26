@@ -322,7 +322,7 @@ def process_inbound_udp(sock):
             sock.sendto(data_header + next_data, from_addr)
             sessions[hash].next_seq += 1
             print(i)
-            # time.sleep(0.1)
+            time.sleep(0.1)
         #######
     elif Type == 3:
         # 收到 DATA
@@ -393,7 +393,6 @@ def process_inbound_udp(sock):
 
         # received an ACK pkt
         ack_num = Ack
-
         ######
         print('ack',ack_num)
         cur_session.window[ack_num - cur_session.base] = 1
@@ -427,9 +426,12 @@ def process_inbound_udp(sock):
                     cur_session.base += cur_session.window_size
                     cur_session.window = [0] * cur_session.window_size
                 else:  # 0就先不用管这个ack了，但后面fast retransmission可能用到
-                    left = copy.deepcopy(cur_session.window[x:])
-                    zeros = [0] * ( cur_session.window_size- len(left) )
-                    cur_session.window = left + zeros
+                    right = copy.deepcopy(cur_session.window[x:])
+                    zeros = [0] * (cur_session.window_size- len(right))
+                    cur_session.window = right + zeros
+                    print('right',right)
+                    print('zeros',zeros)
+                    cur_session.base += x
 
             if (cur_session.next_seq < cur_session.base + cur_session.window_size):
                 left = (cur_session.next_seq) * MAX_PAYLOAD
