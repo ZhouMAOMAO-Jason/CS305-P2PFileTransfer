@@ -429,14 +429,19 @@ def process_inbound_udp(sock):
                     right = copy.deepcopy(cur_session.window[x:])
                     zeros = [0] * (cur_session.window_size- len(right))
                     cur_session.window = right + zeros
-                    print('right',right)
-                    print('zeros',zeros)
+                    # print('right',right)
+                    # print('zeros',zeros)
                     cur_session.base += x
 
             if (cur_session.next_seq < cur_session.base + cur_session.window_size):
-                left = (cur_session.next_seq) * MAX_PAYLOAD
-                right = min((cur_session.next_seq + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
+                left = (cur_session.next_seq-1) * MAX_PAYLOAD
+                right = min((cur_session.next_seq) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
                 next_data = config.haschunks[ex_sending_chunkhash][left: right]
+                print('left', left)
+                print('right', right)
+                if(cur_session.next_seq) == 512:
+                    print('512left',left)
+                    print('512right',right)
                 # send next data
                 data_header = struct.pack("!HBBHHII", 52305, 35, 3, HEADER_LEN, HEADER_LEN + len(next_data),
                                           ack_num + 1, 0)
