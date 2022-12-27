@@ -348,7 +348,7 @@ def process_inbound_udp(sock):
 
         for seq, packet_data in all_packets.items():
             total_len += len(packet_data)
-        
+
         if total_len == CHUNK_DATA_SIZE:
             # 先按照seq顺序将data拼接好
             final_data = bytes()
@@ -356,9 +356,9 @@ def process_inbound_udp(sock):
             for seq in sorted_packets:
                 final_data += received_chunks[ex_downloading_chunkhash][seq]
             # 保存下载文件
+            ex_received_chunk[ex_downloading_chunkhash] = final_data
             with open(ex_output_file, "wb") as wf:
-                # pickle.dump(ex_received_chunk, wf)
-                pickle.dump(final_data, wf)
+                pickle.dump(ex_received_chunk, wf)
 
             # 将该文件加入到 haschunks中
             # config.haschunks[ex_downloading_chunkhash] = ex_received_chunk[ex_downloading_chunkhash]
