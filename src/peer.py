@@ -253,6 +253,8 @@ def process_inbound_udp(sock):
     global received_chunks
     # Receive pkt
     pkt, from_addr = sock.recvfrom(BUF_SIZE)
+    print(type(from_addr))
+    print(from_addr)
     Magic, Team, Type, hlen, plen, Seq, Ack = struct.unpack(
         "!HBBHHII", pkt[:HEADER_LEN])
     data = pkt[HEADER_LEN:]
@@ -261,21 +263,6 @@ def process_inbound_udp(sock):
     # 判断是否超时，超时的话要重传
     hash = '3b68110847941b84e8d05417a5b2609122a56314'
     # print(sessions[hash].window)
-    resnd = 0
-    for curr in sessions:  # 这里将来要改
-        curr = sessions[hash]  # 这里将来要改
-        time_cost = time.time() - curr.timer
-        # print(curr.next_seq)
-        if (time_cost > curr.timeout_interval):
-            for seq in range(curr.base, curr.next_seq):
-                left = (seq) * MAX_PAYLOAD
-                right = min((seq + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
-                next_data = config.haschunks[ex_sending_chunkhash][left: right]
-                # send next data
-                data_header = struct.pack("!HBBHHII", 52305, 35, 3, HEADER_LEN, HEADER_LEN + len(next_data),
-                                          Ack + 1, 0)
-                sock.sendto(data_header + next_data, from_addr)
-    #######
 
     if Type == 0:
         # received an WHOHAS pkt
@@ -478,6 +465,20 @@ def peer_run(config):
             else:
                 # No pkt nor input arrives during this period
                 pass
+            for curr in sessions:  # 这里将来要改
+                curr = sessions['3b68110847941b84e8d05417a5b2609122a56314']  # 这里将来要改
+                time_cost = time.time() - curr.timer
+                # print(curr.next_seq)
+                if (time_cost > curr.timeout_interval):
+                    for seq in range(curr.base, curr.next_seq):
+                        left = (seq) * MAX_PAYLOAD
+                        right = min((seq + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
+                        next_data = config.haschunks[ex_sending_chunkhash][left: right]
+                        # send next data
+                        data_header = struct.pack("!HBBHHII", 52305, 35, 3, HEADER_LEN, HEADER_LEN + len(next_data),
+                                                  seq, 0)
+                        sock.sendto(data_header + next_data, ('127.0.0.1', 48001)) ###这里将来要改
+            #######
     except KeyboardInterrupt:
         pass
     finally:
