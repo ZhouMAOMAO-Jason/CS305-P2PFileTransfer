@@ -54,6 +54,7 @@ class sender_rdt:
         self.beta = 0.25
         self.dup_ack = 0
         self.congestion = False
+        self.OK = False
 
     def congestion_control(self, is_dup, timeout):
         # 要先判断收到的包是不是duplicate的，以及是否传输超时
@@ -389,6 +390,7 @@ def process_inbound_udp(sock):
         if (ack_num)*MAX_PAYLOAD >= CHUNK_DATA_SIZE:
             # finished
             print(f"finished sending {ex_sending_chunkhash}")
+            cur_session.OK = True
             pass
         else:
             # left = (ack_num) * MAX_PAYLOAD
@@ -467,18 +469,19 @@ def peer_run(config):
                 pass
             for curr in sessions:  # 这里将来要改
                 curr = sessions['3b68110847941b84e8d05417a5b2609122a56314']  # 这里将来要改
-                time_cost = time.time() - curr.timer
-                # print(curr.next_seq)
-                if (time_cost > curr.timeout_interval):
-                    for seq in range(curr.base, curr.next_seq):
-                        left = (seq) * MAX_PAYLOAD
-                        right = min((seq + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
-                        next_data = config.haschunks[ex_sending_chunkhash][left: right]
-                        # send next data
-                        data_header = struct.pack("!HBBHHII", 52305, 35, 3, HEADER_LEN, HEADER_LEN + len(next_data),
-                                                  seq, 0)
-                        sock.sendto(data_header + next_data, ('127.0.0.1', 48001)) ###这里将来要改
-            #######
+                if curr.OK == False:
+                    time_cost = time.time() - curr.timer
+                    # print(curr.next_seq)
+                    if (time_cost > curr.timeout_interval):
+                        for seq in range(curr.base, curr.next_seq):
+                            left = (seq) * MAX_PAYLOAD
+                            right = min((seq + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
+                            next_data = config.haschunks[ex_sending_chunkhash][left: right]
+                            # send next data
+                            data_header = struct.pack("!HBBHHII", 52305, 35, 3, HEADER_LEN, HEADER_LEN + len(next_data),
+                                                      seq, 0)
+                            sock.sendto(data_header + next_data, ('127.0.0.1', 48001))  ###这里将来要改
+                #######
     except KeyboardInterrupt:
         pass
     finally:
