@@ -37,7 +37,6 @@ received_chunks: Dict[str, Dict[int, bytes]] = dict() # dict[str, dict[int, byte
 
 snd_hash = []
 rcv_hash = []
-sessions = {}
 timeout = 20
 
 
@@ -199,14 +198,7 @@ class receiver_rdt:
     def make_pkt(self, expected_seq, ack):
         return None
 
-session_object = sender_rdt(20)
-
-if timeout != 0:
-    session_object.timeout_interval = timeout
-else:
-    session_object.timeout_interval = 1
-
-sessions['3b68110847941b84e8d05417a5b2609122a56314'] = session_object
+sessions: Dict[str, sender_rdt] = {}
 
 
 def process_download(sock: simsocket.SimSocket, chunkfile: str, outputfile: str):
@@ -268,11 +260,6 @@ def process_inbound_udp(sock: simsocket.SimSocket):
 
     print('current_chunkhash_str: ', current_chunkhash_str)
 
-
-    # 判断是否超时，超时的话要重传
-    # hash = '3b68110847941b84e8d05417a5b2609122a56314'
-    # print(sessions[hash].window)
-
     if Type == 0:
         # received an WHOHAS pkt
         # see what chunk the sender has
@@ -300,6 +287,15 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         sock.sendto(get_pkt, from_addr)
     elif Type == 2:
         # # received a GET pkt
+        # 创建sender_rdt实例，加入到sessions中
+        session_object = sender_rdt(20)
+
+        if timeout != 0:
+            session_object.timeout_interval = timeout
+        else:
+            session_object.timeout_interval = 1
+
+        sessions[current_chunkhash_str] = session_object
         sessions[current_chunkhash_str].timer = time.time()
         for i in range(sessions[current_chunkhash_str].window_size):
             left = (i) * MAX_PAYLOAD
@@ -452,8 +448,7 @@ def peer_run(config: bt_utils.BtConfig):
             else:
                 # No pkt nor input arrives during this period
                 pass
-            for curr in sessions:  # 这里将来要改
-                curr = sessions['3b68110847941b84e8d05417a5b2609122a56314']  # 这里将来要改
+            for chunkhash, curr in sessions.items():  # 这里将来要改
                 if curr.OK == False:
                     time_cost = time.time() - curr.timer
                     # print(curr.next_seq)
