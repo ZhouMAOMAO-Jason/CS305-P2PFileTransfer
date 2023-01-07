@@ -25,23 +25,26 @@ CHUNK_DATA_SIZE = 512 * 1024
 MAX_PAYLOAD = 1024
 
 config = None
-ex_output_file = None
-ex_received_chunk = dict()
-# ex_sending_chunkhash = ""
-# ex_downloading_chunkhash = ""
-current_chunkhash_byte = ""
-current_chunkhash_str = ""
+
+# 记录每个chunk最终输出的文件名称
+download_filenames: Dict[str, str] = dict()
+
+# 记录每个chunk最终的数据
+final_received_chunks: Dict[str, bytes] = dict()
 
 # 当前peer收到的所有chunk的所有包，格式为{chunkhash: {sequence: data}}
-received_chunks: Dict[str, Dict[int, bytes]] = dict() # dict[str, dict[int, bytes]]
+received_chunks_data: Dict[str, Dict[int, bytes]] = dict()
+
+# 当前peer收到的所有chunk的累计acknum
+received_chunks_acks: Dict[str, int] = dict()
 
 snd_hash = []
 rcv_hash = []
 timeout = 20
 
 
-class sender_rdt:
-    def __init__(self, window_size):
+class SenderSession:
+    def __init__(self, window_size: int):
         self.window_size = 20
         self.window = [0] * window_size
         self.ssthresh = 64
@@ -176,8 +179,8 @@ class sender_rdt:
         return 0
 
 
-class receiver_rdt:
-    def __init__(self, ):
+class ReceiverSession:
+    def __init__(self):
         self.buffer = []
         self.timer = 0
         self.expected_seq = 0
@@ -198,20 +201,16 @@ class receiver_rdt:
     def make_pkt(self, expected_seq, ack):
         return None
 
-sessions: Dict[str, sender_rdt] = {}
+sessions: Dict[str, SenderSession] = {}
 
 
 def process_download(sock: simsocket.SimSocket, chunkfile: str, outputfile: str):
     '''
     if DOWNLOAD is used, the peer will keep getting files until it is done
     '''
-    global ex_output_file
-    # global ex_received_chunk
-    global received_chunks
-    # global ex_downloading_chunkhash
-
-    ex_output_file = outputfile
-    # download_hash = bytes()
+    # global received_chunks_data
+    # global received_chunks_acks
+    global download_filenames
 
     content = ''
 
@@ -222,12 +221,12 @@ def process_download(sock: simsocket.SimSocket, chunkfile: str, outputfile: str)
 
     for line in content:
         index, datahash_str = line.strip().split(" ")
-        # ex_received_chunk[datahash_str] = bytes()
-        received_chunks[datahash_str] = dict()
-        # ex_downloading_chunkhash = datahash_str
+        # received_chunks_data[datahash_str] = dict()
+        # received_chunks_acks[datahash_str] = dict()
+
+        download_filenames[datahash_str] = outputfile
 
         datahash = bytes.fromhex(datahash_str)
-
         whohas_header = struct.pack(
             PACKET_FORMAT, 52305, 35, 0, HEADER_LEN, HEADER_LEN+len(datahash), 0, 0)
         whohas_pkt = whohas_header + datahash + datahash
@@ -242,53 +241,53 @@ def process_download(sock: simsocket.SimSocket, chunkfile: str, outputfile: str)
 
 def process_inbound_udp(sock: simsocket.SimSocket):
     global config
-    global ex_output_file
-    global ex_received_chunk
-    # global ex_downloading_chunkhash
-    # global ex_sending_chunkhash
-    global received_chunks
-    global current_chunkhash_byte
-    global current_chunkhash_str
-    # Receive pkt
+    global final_received_chunks
+    global received_chunks_data
+    global received_chunks_acks
+    # 收到包
     pkt, from_addr = sock.recvfrom(BUF_SIZE)
-    print(type(from_addr))
-    print(from_addr)
+
     Magic, Team, Type, hlen, plen, Seq, Ack = struct.unpack(PACKET_FORMAT, pkt[:HEADER_LEN])
+    # 当前包属于哪一个chunk
     current_chunkhash_byte = pkt[HEADER_LEN: HEADER_LEN+20]
     data = pkt[HEADER_LEN+20:]
     current_chunkhash_str = bytes.hex(current_chunkhash_byte)
 
-    print('current_chunkhash_str: ', current_chunkhash_str)
+    # print('current_chunkhash_str: ', current_chunkhash_str)
 
     if Type == 0:
-        # received an WHOHAS pkt
-        # see what chunk the sender has
+        # 收到WHOHAS
         whohas_chunk_hash = data[:20]
-        # bytes to hex_str
+        # hex转str
         chunkhash_str = bytes.hex(whohas_chunk_hash)
-        # ex_sending_chunkhash = chunkhash_str
 
         print(f"whohas: {chunkhash_str}, has: {list(config.haschunks.keys())}")
         if chunkhash_str in config.haschunks:
-            # send back IHAVE pkt
+            # 发送IHAVE
             ihave_header = struct.pack(PACKET_FORMAT, 52305, 35, 1,
                 HEADER_LEN, HEADER_LEN+len(whohas_chunk_hash), 0, 0)
             ihave_pkt = ihave_header + current_chunkhash_byte + whohas_chunk_hash
             sock.sendto(ihave_pkt, from_addr)
     elif Type == 1:
-        # received an IHAVE pkt
-        # see what chunk the sender has
+        # 收到IHAVE
         get_chunk_hash = data[:20]
+        # 如果之前已经有chunk拥有者发过IHAVE，就不做任何动作
+        if current_chunkhash_str in received_chunks_data:
+            return
 
-        # send back GET pkt
+        # 如果还没有别的chunk拥有者到来，就初始化当前chunkhash
+        received_chunks_data[current_chunkhash_str] = dict()
+        received_chunks_acks[current_chunkhash_str] = 0
+
+        # 发送GET
         get_header = struct.pack(PACKET_FORMAT, 52305, 35, 2,
             HEADER_LEN, HEADER_LEN+len(get_chunk_hash), 0, 0)
         get_pkt = get_header + current_chunkhash_byte + get_chunk_hash
         sock.sendto(get_pkt, from_addr)
     elif Type == 2:
-        # # received a GET pkt
-        # 创建sender_rdt实例，加入到sessions中
-        session_object = sender_rdt(20)
+        # 收到GET
+        # 创建SenderSession实例，加入到sessions中
+        session_object = SenderSession(20)
 
         if timeout != 0:
             session_object.timeout_interval = timeout
@@ -301,58 +300,61 @@ def process_inbound_udp(sock: simsocket.SimSocket):
             left = (i) * MAX_PAYLOAD
             right = min((i + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
             next_data = config.haschunks[current_chunkhash_str][left: right]
-            # send next data
+            # 发送下一节数据
             data_header = struct.pack(PACKET_FORMAT, 52305, 35, 3, HEADER_LEN, HEADER_LEN + len(next_data),
                                           i+1, 0)
             sock.sendto(data_header + current_chunkhash_byte + next_data, from_addr)
             sessions[current_chunkhash_str].next_seq += 1
-            print(i)
+            # print(i)
             time.sleep(0.1)
     elif Type == 3:
-        # 收到 DATA
-        # ex_received_chunk[ex_downloading_chunkhash] += data
-
+        # 收到DATA
         # 如果当前序列号为Seq的包已经被收过了
-        if Seq in received_chunks[current_chunkhash_str]:
+        if Seq in received_chunks_data[current_chunkhash_str]:
             return
         
-        received_chunks[current_chunkhash_str][Seq] = data
+        received_chunks_data[current_chunkhash_str][Seq] = data
 
-        # send back ACK
+        # 更新当前acknum(累计ack)
+        cur_ack = received_chunks_acks[current_chunkhash_str]
+        while cur_ack in received_chunks_data:
+            cur_ack += 1
+
+        # 发送ACK
         ack_pkt = struct.pack(PACKET_FORMAT, 52305, 35, 4, 
-            HEADER_LEN, HEADER_LEN, 0, Seq)
+            HEADER_LEN, HEADER_LEN, 0, cur_ack)
         sock.sendto(ack_pkt + current_chunkhash_byte, from_addr)
 
-        # if len(ex_received_chunk[ex_downloading_chunkhash]) == CHUNK_DATA_SIZE:
         # 判断当前chunk下载是否结束
         # 计算收到的总长度
-
         total_len = 0
-        all_packets = received_chunks[current_chunkhash_str]
+        all_packets = received_chunks_data[current_chunkhash_str]
 
         for seq, packet_data in all_packets.items():
             total_len += len(packet_data)
         
-        print('total_len: ', total_len)
+        # print('total_len: ', total_len)
         if total_len == CHUNK_DATA_SIZE:
             # 先按照seq顺序将data拼接好
             final_data = bytes()
-            sorted_packets = sorted(received_chunks[current_chunkhash_str])
+            sorted_packets = sorted(received_chunks_data[current_chunkhash_str])
             for seq in sorted_packets:
-                final_data += received_chunks[current_chunkhash_str][seq]
+                final_data += received_chunks_data[current_chunkhash_str][seq]
             # 保存下载文件
-            ex_received_chunk[current_chunkhash_str] = final_data
-            with open(ex_output_file, "wb") as wf:
-                pickle.dump(ex_received_chunk, wf)
+            final_received_chunks[current_chunkhash_str] = final_data
+            with open(download_filenames[current_chunkhash_str], "wb") as wf:
+                pickle.dump(final_received_chunks, wf)
 
             # 将该文件加入到 haschunks中
-            # config.haschunks[ex_downloading_chunkhash] = ex_received_chunk[ex_downloading_chunkhash]
             config.haschunks[current_chunkhash_str] = final_data
 
-            print(f"GOT {ex_output_file}")
+            # 下载完毕，清除已有chunkhash状态
+            del received_chunks_data[current_chunkhash_str]
+            del received_chunks_acks[current_chunkhash_str]
+
+            print(f"GOT {download_filenames[current_chunkhash_str]}")
 
             sha1 = hashlib.sha1()
-            # sha1.update(ex_received_chunk[ex_downloading_chunkhash])
             sha1.update(final_data)
             received_chunkhash_str = sha1.hexdigest()
             print(f"Expected chunkhash: {current_chunkhash_str}")
@@ -364,6 +366,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
             else:
                 print("Example fails. Please check the example files carefully.")
     elif Type == 4:
+        # 收到ACK
         cur_session = sessions[current_chunkhash_str]
         recv_time = time.time()
         sampleRTT = recv_time - cur_session.timer
@@ -373,11 +376,10 @@ def process_inbound_udp(sock: simsocket.SimSocket):
             abs(sampleRTT - cur_session.estimatedRTT))
         cur_session.timeout_interval = cur_session.estimatedRTT + 4 * cur_session.devRTT
 
-        # received an ACK pkt
         ack_num = Ack
-        print('ack', ack_num)
+        # print('ack', ack_num)
         cur_session.window[ack_num - cur_session.base] = 1
-        print(cur_session.window)
+        # print(cur_session.window)
 
         if (ack_num)*MAX_PAYLOAD >= CHUNK_DATA_SIZE:
             # finished
@@ -408,19 +410,19 @@ def process_inbound_udp(sock: simsocket.SimSocket):
                 left = (cur_session.next_seq-1) * MAX_PAYLOAD
                 right = min((cur_session.next_seq) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
                 next_data = config.haschunks[current_chunkhash_str][left: right]
-                print('left', left)
-                print('right', right)
-                if(cur_session.next_seq) == 512:
-                    print('512left',left)
-                    print('512right',right)
-                # send next data
+                # print('left', left)
+                # print('right', right)
+                # if(cur_session.next_seq) == 512:
+                #     print('512left',left)
+                #     print('512right',right)
+                # 发送下一节数据
                 data_header = struct.pack(PACKET_FORMAT, 52305, 35, 3, HEADER_LEN, HEADER_LEN + len(next_data),
                                           ack_num + 1, 0)
                 sock.sendto(data_header + current_chunkhash_byte + next_data, from_addr)
                 if cur_session.base == cur_session.next_seq:
                     cur_session.timer = time.time()  # start_timer
                     cur_session.next_seq += 1
-                    print('next_seq',cur_session.next_seq)
+                    # print('next_seq',cur_session.next_seq)
 
 
 def process_user_input(sock: simsocket.SimSocket):
@@ -461,7 +463,6 @@ def peer_run(config: bt_utils.BtConfig):
                             data_header = struct.pack(PACKET_FORMAT, 52305, 35, 3, HEADER_LEN, HEADER_LEN + len(next_data),
                                                       seq, 0)
                             sock.sendto(data_header + current_chunkhash_byte + next_data, ('127.0.0.1', 48001))  ###这里将来要改
-                #######
     except KeyboardInterrupt:
         pass
     finally:
