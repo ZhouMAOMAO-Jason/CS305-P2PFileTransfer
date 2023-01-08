@@ -23,9 +23,11 @@ data2.fragment: chunk 3,4
 This test is equivalent to run (except for packet loss):
 In shell1:
 python3 src/peer.py -p test/tmp2/nodes2.map -c test/tmp2/data1.fragment -m 1 -i 1 -t 60
+python3 src/peer_new.py -p test/tmp2/nodes2.map -c test/tmp2/data1.fragment -m 1 -i 1 -t 60
 
 In shell2:
 python3 src/peer.py -p test/tmp2/nodes2.map -c test/tmp2/data2.fragment -m 1 -i 2 -t 60
+python3 src/peer_new.py -p test/tmp2/nodes2.map -c test/tmp2/data2.fragment -m 1 -i 2 -t 60
 
 In shell1:
 DOWNLOAD test/tmp2/download_target.chunkhash test/tmp2/download_result.fragment
