@@ -70,11 +70,12 @@ class SenderSession:
             if is_dup or timeout:
                 self.ssthresh = max(self.window_size // 2, 2)
                 self.window_size = 1
-                self.window = [self.window[0]]
+                self.window = [0, self.window[1]]
                 # Todo:重传
             # 正常情况
             elif self.window_size < self.ssthresh:
                 self.window_size += 1
+                self.window = self.window + [0]
             else:
                 self.congestion = True
 
@@ -82,12 +83,13 @@ class SenderSession:
             if is_dup or timeout:
                 self.ssthresh = max(self.window_size // 2, 2)
                 self.window_size = 1
-                self.window = [self.window[0]]
+                self.window = [0, self.window[1]]
                 self.congestion = False
                 # Todo:重传
-            else:
-                self.window_size = int(self.window_size + (1 / self.window_size))
-                self.window = [self.window[:self.window_size]]
+            elif self.window_size < self.ssthresh:
+                self.window_size += 1
+                self.window = [0] + self.window[1 : self.window_size + 1]
+
 
     def rdt_send(self):
         if (self.next_seq < self.base + self.window_size):
@@ -288,6 +290,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         # 收到GET
         # 创建SenderSession实例，加入到sessions中
         new_sender_session = SenderSession(20)
+        duplicate_ACK[current_chunkhash_str] = dict()
 
         if timeout != 0:
             new_sender_session.timeout_interval = timeout
@@ -383,27 +386,14 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         print('ack', ack_num)
         print('base', cur_session.base)
 
-        # 判断是否为3个冗余ACK
-        if duplicate_ACK.get(current_chunkhash_str).get(ack_num) is not None:
-            num = duplicate_ACK.get(current_chunkhash_str).get(ack_num) + 1
-            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, num + 1)
-        else:
-            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, 1)
-
-        if duplicate_ACK.get(current_chunkhash_str).get(ack_num) >= 3:
-            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, 0)
-            cur_session.congestion_control(True, False)
-        else:
-            cur_session.congestion_control(False, False)
-
-        # sock.add_log('base: {}'.format(cur_session.base))
+        sock.add_log('base: {}'.format(cur_session.base))
         # print('next_seq', cur_session.next_seq)
-        for i in range(ack_num - cur_session.base, 0, -1):
+        for i in range(min(ack_num - cur_session.base, cur_session.window_size), 0, -1):
             cur_session.window[i] = 1
 
         # cur_session.window[ack_num - cur_session.base] = 1
         print(cur_session.window)
-        # sock.add_log('cur_session.window: {}'.format(cur_session.window))
+        sock.add_log('cur_session.window: {}'.format(cur_session.window))
         if (ack_num - 1) * MAX_PAYLOAD >= CHUNK_DATA_SIZE:
             # 完成发送
             print(f"finished sending {current_chunkhash_str}")
@@ -463,6 +453,20 @@ def process_inbound_udp(sock: simsocket.SimSocket):
                     cur_session.timer = time.time()  # start_timer
                     cur_session.next_seq += 1
                     # print('next_seq',cur_session.next_seq)
+
+        # 判断是否为3个冗余ACK
+        if duplicate_ACK.get(current_chunkhash_str).get(ack_num) is not None:
+            num = duplicate_ACK.get(current_chunkhash_str).get(ack_num) + 1
+            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, num + 1)
+        else:
+            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, 1)
+
+        if duplicate_ACK.get(current_chunkhash_str).get(ack_num) >= 3:
+            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, 0)
+            cur_session.congestion_control(True, False)
+        else:
+            cur_session.congestion_control(False, False)
+
 
 
 def process_user_input(sock: simsocket.SimSocket):
