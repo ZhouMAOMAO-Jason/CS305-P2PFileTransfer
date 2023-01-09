@@ -38,6 +38,9 @@ received_chunks_data: Dict[str, Dict[int, bytes]] = dict()
 # 当前peer收到的所有chunk的累计acknum
 received_chunks_acks: Dict[str, int] = dict()
 
+# 是否收到冗余的ACK {chunkhash: {sequence: number}}
+duplicate_ACK: Dict[str, Dict[int, int]] = dict()
+
 snd_hash = []
 rcv_hash = []
 timeout = 20
@@ -57,38 +60,34 @@ class SenderSession:
         self.devRTT = 0
         self.alpha = 0.125
         self.beta = 0.25
-        self.dup_ack = 0
         self.congestion = False
         self.OK = False
 
     def congestion_control(self, is_dup, timeout):
         # 要先判断收到的包是不是duplicate的，以及是否传输超时
-        if is_dup:
-            self.dup_ack += 1
-
         if not self.congestion:
             #  超时重传或收到三个多余的ack包
-            if self.dup_ack >= 3 or timeout:
+            if is_dup or timeout:
                 self.ssthresh = max(self.window_size // 2, 2)
                 self.window_size = 1
-                self.window = [0] * self.window_size
+                self.window = [self.window[0]]
                 # Todo:重传
             # 正常情况
             elif self.window_size < self.ssthresh:
                 self.window_size += 1
-                self.window = [0] * self.window_size
             else:
                 self.congestion = True
 
         else:
-            if self.dup_ack >= 3 or timeout:
+            if is_dup or timeout:
                 self.ssthresh = max(self.window_size // 2, 2)
                 self.window_size = 1
-                self.window = [0] * self.window_size
+                self.window = [self.window[0]]
                 self.congestion = False
                 # Todo:重传
-            self.window_size = int(self.window_size + (1 / self.window_size))
-            self.window = [0] * self.window_size
+            else:
+                self.window_size = int(self.window_size + (1 / self.window_size))
+                self.window = [self.window[:self.window_size]]
 
     def rdt_send(self):
         if (self.next_seq < self.base + self.window_size):
@@ -108,6 +107,7 @@ class SenderSession:
         for i in range(self.base, self.next_seq):
             data = self.buffer[i]
             sndpkt = self.make_pkt(i, data)
+            self.congestion_control(False, True)
             # self.window = [0] * self.window_size #全部重发，ack归0 (这个需要吗，可能ack最后一个丢了，其实都收到了？
             # send(sndpkt)
 
@@ -242,6 +242,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
     global final_received_chunks
     global received_chunks_data
     global received_chunks_acks
+    global duplicate_ACK
     # 收到包
     pkt, from_addr = sock.recvfrom(BUF_SIZE)
     ip, port = from_addr
@@ -381,6 +382,20 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         ack_num = Ack
         print('ack', ack_num)
         print('base', cur_session.base)
+
+        # 判断是否为3个冗余ACK
+        if duplicate_ACK.get(current_chunkhash_str).get(ack_num) is not None:
+            num = duplicate_ACK.get(current_chunkhash_str).get(ack_num) + 1
+            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, num + 1)
+        else:
+            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, 1)
+
+        if duplicate_ACK.get(current_chunkhash_str).get(ack_num) >= 3:
+            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, 0)
+            cur_session.congestion_control(True, False)
+        else:
+            cur_session.congestion_control(False, False)
+
         # sock.add_log('base: {}'.format(cur_session.base))
         # print('next_seq', cur_session.next_seq)
         for i in range(ack_num - cur_session.base, 0, -1):
