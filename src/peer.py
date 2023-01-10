@@ -63,15 +63,14 @@ class SenderSession:
         self.congestion = False
         self.OK = False
 
-    def congestion_control(self, is_dup, timeout):
+    def congestion_control(self, re_transmit):
         # 要先判断收到的包是不是duplicate的，以及是否传输超时
         if not self.congestion:
             #  超时重传或收到三个多余的ack包
-            if is_dup or timeout:
+            if re_transmit:
                 self.ssthresh = max(self.window_size // 2, 2)
                 self.window_size = 1
                 self.window = [0, self.window[1]]
-                # Todo:重传
             # 正常情况
             elif self.window_size < self.ssthresh:
                 self.window_size += 1
@@ -80,12 +79,11 @@ class SenderSession:
                 self.congestion = True
 
         else:
-            if is_dup or timeout:
+            if re_transmit:
                 self.ssthresh = max(self.window_size // 2, 2)
                 self.window_size = 1
                 self.window = [0, self.window[1]]
                 self.congestion = False
-                # Todo:重传
             elif self.window_size < self.ssthresh:
                 self.window_size += 1
                 self.window = [0] + self.window[1 : self.window_size + 1]
@@ -143,7 +141,7 @@ class SenderSession:
                     pass
                 elif x == self.window_size:
                     self.base += self.window_size
-                    self.window = [0] * self.window_size
+                    self.window = [0] * (self.window_size + 1)
                 else:  # 0就先不用管这个ack了，但后面fast retransmission可能用到
                     right = copy.deepcopy(self.window[x:])
                     zeros = [0] * len(right)
@@ -207,6 +205,8 @@ class ReceiverSession:
 # {(chunkhash, ip, port): sender_session}
 sender_sessions: Dict[Tuple[str, str, int], SenderSession] = {}
 
+is_timeout = False
+
 
 def process_download(sock: simsocket.SimSocket, chunkfile: str, outputfile: str):
     '''
@@ -245,6 +245,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
     global received_chunks_data
     global received_chunks_acks
     global duplicate_ACK
+    global is_timeout
     # 收到包
     pkt, from_addr = sock.recvfrom(BUF_SIZE)
     ip, port = from_addr
@@ -419,6 +420,11 @@ def process_inbound_udp(sock: simsocket.SimSocket):
                     print('zeros', zeros)
                     cur_session.base += x
 
+                # 超时重传后，重新处理窗口大小
+                if is_timeout:
+                    cur_session.congestion_control(True)
+                    is_timeout = False
+
             while cur_session.next_seq < cur_session.base + cur_session.window_size:
                 if cur_session.next_seq > CHUNK_DATA_SIZE // MAX_PAYLOAD:
                     break
@@ -463,9 +469,17 @@ def process_inbound_udp(sock: simsocket.SimSocket):
 
         if duplicate_ACK.get(current_chunkhash_str).get(ack_num) >= 3:
             duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, 0)
-            cur_session.congestion_control(True, False)
+            data_header = struct.pack(PACKET_FORMAT, 52305, 35, 3, HEADER_LEN,
+                                          HEADER_LEN + len(current_chunkhash_byte) + len(next_data),
+                                          ack_num, 0)
+            left = (ack_num - 1) * MAX_PAYLOAD
+            right = min((ack_num) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
+            next_data = config.haschunks[current_chunkhash_str][left: right]
+            sock.sendto(data_header + current_chunkhash_byte + next_data, from_addr)
+            # sock.add_log('ack_num: {}'.format(ack_num))
+            cur_session.congestion_control(True)
         else:
-            cur_session.congestion_control(False, False)
+            cur_session.congestion_control(False)
 
 
 
@@ -481,6 +495,7 @@ def peer_run(config: bt_utils.BtConfig):
     addr = (config.ip, config.port)
     sock = simsocket.SimSocket(config.identity, addr, verbose=config.verbose)
     global timeout
+    global is_timeout
     timeout = config.timeout
     try:
         while True:
@@ -508,6 +523,8 @@ def peer_run(config: bt_utils.BtConfig):
                                                   HEADER_LEN + len(chunkhash_byte) + len(next_data),
                                                   curr.base, 0)
                         sock.sendto(data_header + chunkhash_byte + next_data, (ip, port))  ###这里将来要改
+                        sock.add_log("触发超时重传")
+                        is_timeout = True
     except KeyboardInterrupt:
         pass
     finally:
