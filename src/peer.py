@@ -53,13 +53,14 @@ class SenderSession:
     def __init__(self, window_size: int):
         self.window_size = 20
         self.window = [0] * (window_size + 1)
+        self.time_record = {}
         self.ssthresh = 64
         self.base = 1
         self.next_seq = 1
         self.buffer = []
         self.timer = 0
-        self.timeout_interval = 1
-        self.estimatedRTT = 0
+        self.timeout_interval = 2.5
+        self.estimatedRTT = 1.5
         self.devRTT = 0
         self.alpha = 0.125
         self.beta = 0.25
@@ -283,7 +284,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         # 如果还没有别的chunk拥有者到来，就初始化当前chunkhash
         received_chunks_data[current_chunkhash_str] = dict()
         received_chunks_acks[current_chunkhash_str] = 1
-        recv_time.setdefault(current_chunkhash_str, time.time())
+        recv_time[current_chunkhash_str] = time.time()
 
         # 发送GET
         get_header = struct.pack(PACKET_FORMAT, 52305, 35, 2,
@@ -313,14 +314,19 @@ def process_inbound_udp(sock: simsocket.SimSocket):
                                       HEADER_LEN + len(current_chunkhash_byte) + len(next_data),
                                       i + 1, 0)
             sock.sendto(data_header + current_chunkhash_byte + next_data, from_addr)
+            sender_sessions[(current_chunkhash_str, ip, port)].time_record[i + 1] = time.time()
             sender_sessions[(current_chunkhash_str, ip, port)].next_seq += 1
+
             # print(i)
             # time.sleep(0.1)
     elif Type == 3:
         # 收到DATA
         # 如果当前序列号为Seq的包已经被收过了
         # print('received_chunks_data: ', received_chunks_data[current_chunkhash_str])
-        recv_time.setdefault(current_chunkhash_str, time.time())
+        recv_time[current_chunkhash_str] = time.time()
+        # if current_chunkhash_str not in received_chunks_data:
+        #     received_chunks_data[current_chunkhash_str] = dict()
+        #     received_chunks_acks[current_chunkhash_str] = 1
         if Seq not in received_chunks_data[current_chunkhash_str]:
             received_chunks_data[current_chunkhash_str][Seq] = data
 
@@ -332,7 +338,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
 
         # 发送ACK
         ack_pkt = struct.pack(PACKET_FORMAT, 52305, 35, 4,
-                              HEADER_LEN, HEADER_LEN + len(current_chunkhash_byte), 0, sending_ack)
+                              HEADER_LEN, HEADER_LEN + len(current_chunkhash_byte), Seq, sending_ack)
         sock.sendto(ack_pkt + current_chunkhash_byte, from_addr)
 
         # 判断当前chunk下载是否结束
@@ -381,12 +387,14 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         # 收到ACK
         cur_session = sender_sessions[(current_chunkhash_str, ip, port)]
         receive_time = time.time()
-        sampleRTT = receive_time - cur_session.timer
+        # 重新计算超时时间
+        sampleRTT = receive_time - cur_session.time_record[Seq]
         cur_session.estimatedRTT = (1 - cur_session.alpha) * cur_session.estimatedRTT + \
                                    cur_session.alpha * sampleRTT
         cur_session.devRTT = (1 - cur_session.beta) * cur_session.devRTT + cur_session.beta * (
             abs(sampleRTT - cur_session.estimatedRTT))
-        # cur_session.timeout_interval = cur_session.estimatedRTT + 4 * cur_session.devRTT
+        cur_session.timeout_interval = cur_session.estimatedRTT + 4 * cur_session.devRTT
+        sock.add_log("timeout : {}".format(cur_session.timeout_interval))
 
         ack_num = Ack
         # print('ack', ack_num)
@@ -406,6 +414,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
             cur_session.OK = True
         else:
             if cur_session.window[1] == 1:
+                cur_session.timer = time.time()
                 x = 0
                 for i in range(1, len(cur_session.window)):  # 看看window的情况
                     if cur_session.window[i] == 1:
@@ -441,6 +450,8 @@ def process_inbound_udp(sock: simsocket.SimSocket):
                                           HEADER_LEN + len(current_chunkhash_byte) + len(next_data),
                                           cur_session.next_seq, 0)
                 sock.sendto(data_header + current_chunkhash_byte + next_data, from_addr)
+                cur_session.time_record[cur_session.next_seq] = time.time()
+                sock.add_log("nex_seq : {}".format(cur_session.next_seq))
                 cur_session.next_seq += 1
                 # if (cur_session.next_seq < cur_session.base + cur_session.window_size):
                 #     left = (cur_session.next_seq-1) * MAX_PAYLOAD
@@ -456,7 +467,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
                 #                               Ack, 0)
                 #     sock.sendto(data_header + current_chunkhash_byte + next_data, from_addr)
                 if cur_session.base == cur_session.next_seq:
-                    cur_session.timer = time.time()  # start_timer
+                    # cur_session.timer = time.time()  # start_timer
                     cur_session.next_seq += 1
                     # print('next_seq',cur_session.next_seq)
 
@@ -518,6 +529,7 @@ def peer_run(config: bt_utils.BtConfig):
                     if (time_cost > curr.timeout_interval):
                         sock.add_log("触发超时重传")
                         sock.add_log("time : {}".format(time_cost))
+                        # curr.timeout_interval = 2.5 #要改
                         curr.timer = time.time()
                         left = (curr.base) * MAX_PAYLOAD
                         right = min((curr.base + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
