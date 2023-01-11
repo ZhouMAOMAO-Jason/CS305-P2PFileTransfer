@@ -2,6 +2,7 @@ import copy
 import sys
 import os
 import time
+import matplotlib.pyplot as plt
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import select
@@ -44,6 +45,9 @@ duplicate_ACK: Dict[str, Dict[int, int]] = dict()
 # 当前传输的包的最后一次传输时间
 recv_time: Dict[str, float] = dict()
 
+# 记录window_size的变化
+window_vis: Dict[float, int] = dict()
+
 snd_hash = []
 rcv_hash = []
 timeout = 20
@@ -51,7 +55,7 @@ timeout = 20
 
 class SenderSession:
     def __init__(self, window_size: int):
-        self.window_size = 20
+        self.window_size = 2
         self.window = [0] * (window_size + 1)
         self.time_record = {}
         self.ssthresh = 64
@@ -66,6 +70,7 @@ class SenderSession:
         self.beta = 0.25
         self.congestion = False
         self.OK = False
+        self.float_size = 20.0
 
     def congestion_control(self, re_transmit):
         # 要先判断收到的包是不是duplicate的，以及是否传输超时
@@ -88,9 +93,11 @@ class SenderSession:
                 self.window_size = 1
                 self.window = [0, self.window[1]]
                 self.congestion = False
-            elif self.window_size < self.ssthresh:
-                self.window_size += 1
-                self.window = [0] + self.window[1 : self.window_size + 1]
+            else:
+                self.float_size += 1 / self.window_size
+                if self.float_size >= self.window_size + 1:
+                    self.window_size += 1
+                    self.window = [0] + self.window[1 : self.window_size + 1]
 
 
     def rdt_send(self):
@@ -210,6 +217,16 @@ class ReceiverSession:
 sender_sessions: Dict[Tuple[str, str, int], SenderSession] = {}
 
 
+def win_vis():
+    global window_vis
+    x = []
+    y = []
+    for t in window_vis:
+        x.append(t)
+        y.append(window_vis[t])
+    plt.plot(x, y)
+    plt.savefig("win_vis.png")
+
 
 def process_download(sock: simsocket.SimSocket, chunkfile: str, outputfile: str):
     '''
@@ -271,7 +288,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         if chunkhash_str in config.haschunks:
             # 发送IHAVE
             ihave_header = struct.pack(PACKET_FORMAT, 52305, 35, 1,
-                                       HEADER_LEN, HEADER_LEN + len(whohas_chunk_hash), 0, 0)
+                                       HEADER_LEN, HEADER_LEN + len(current_chunkhash_byte) + len(whohas_chunk_hash), 0, 0)
             ihave_pkt = ihave_header + current_chunkhash_byte + whohas_chunk_hash
             sock.sendto(ihave_pkt, from_addr)
     elif Type == 1:
@@ -288,7 +305,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
 
         # 发送GET
         get_header = struct.pack(PACKET_FORMAT, 52305, 35, 2,
-                                 HEADER_LEN, HEADER_LEN + len(get_chunk_hash), 0, 0)
+                                 HEADER_LEN, HEADER_LEN + len(current_chunkhash_byte) + len(get_chunk_hash), 0, 0)
         get_pkt = get_header + current_chunkhash_byte + get_chunk_hash
         sock.sendto(get_pkt, from_addr)
     elif Type == 2:
@@ -323,6 +340,10 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         # 收到DATA
         # 如果当前序列号为Seq的包已经被收过了
         # print('received_chunks_data: ', received_chunks_data[current_chunkhash_str])
+        recv_time[current_chunkhash_str] = time.time()
+        if current_chunkhash_str not in received_chunks_data:
+            received_chunks_data[current_chunkhash_str] = dict()
+            received_chunks_acks[current_chunkhash_str] = 1
         recv_time[current_chunkhash_str] = time.time()
         # if current_chunkhash_str not in received_chunks_data:
         #     received_chunks_data[current_chunkhash_str] = dict()
@@ -387,18 +408,48 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         # 收到ACK
         cur_session = sender_sessions[(current_chunkhash_str, ip, port)]
         receive_time = time.time()
+        window_vis[receive_time] = cur_session.window_size
         # 重新计算超时时间
         sampleRTT = receive_time - cur_session.time_record[Seq]
         cur_session.estimatedRTT = (1 - cur_session.alpha) * cur_session.estimatedRTT + \
                                    cur_session.alpha * sampleRTT
         cur_session.devRTT = (1 - cur_session.beta) * cur_session.devRTT + cur_session.beta * (
             abs(sampleRTT - cur_session.estimatedRTT))
+        # cur_session.timeout_interval = cur_session.estimatedRTT + 4 * cur_session.devRTT
+        # sock.add_log("timeout : {}".format(cur_session.timeout_interval))
         cur_session.timeout_interval = cur_session.estimatedRTT + 4 * cur_session.devRTT
         sock.add_log("timeout : {}".format(cur_session.timeout_interval))
+
 
         ack_num = Ack
         # print('ack', ack_num)
         # print('base', cur_session.base)
+
+        # 判断是否为3个冗余ACK
+        if duplicate_ACK.get(current_chunkhash_str).get(ack_num) is not None:
+            num = duplicate_ACK.get(current_chunkhash_str).get(ack_num) + 1
+            duplicate_ACK.get(current_chunkhash_str)[ack_num] = num + 1
+        else:
+            duplicate_ACK.get(current_chunkhash_str)[ack_num] = 1
+
+        sock.add_log("ack_num : {}".format(duplicate_ACK.get(current_chunkhash_str).get(ack_num)))
+
+        if duplicate_ACK.get(current_chunkhash_str).get(ack_num) >= 3:
+            sock.add_log("触发冗余重传")
+            duplicate_ACK.get(current_chunkhash_str)[ack_num] = -1000
+            left = (ack_num) * MAX_PAYLOAD
+            right = min((ack_num + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
+            next_data = config.haschunks[current_chunkhash_str][left: right]
+            chunkhash_byte = bytes.fromhex(current_chunkhash_str)
+            # 重新传输
+            data_header = struct.pack(PACKET_FORMAT, 52305, 35, 3, HEADER_LEN,
+                                      HEADER_LEN + len(chunkhash_byte) + len(next_data),
+                                      ack_num, 0)
+            sock.sendto(data_header + chunkhash_byte + next_data, (ip, port))
+            cur_session = sender_sessions[(current_chunkhash_str, ip, port)]
+            cur_session.congestion_control(True)
+        else:
+            cur_session.congestion_control(False)
 
         sock.add_log('base: {}'.format(cur_session.base))
         # print('next_seq', cur_session.next_seq)
@@ -412,6 +463,8 @@ def process_inbound_udp(sock: simsocket.SimSocket):
             # 完成发送
             # print(f"finished sending {current_chunkhash_str}")
             cur_session.OK = True
+            # 画出窗口变化图
+            win_vis()
         else:
             if cur_session.window[1] == 1:
                 cur_session.timer = time.time()
@@ -470,27 +523,6 @@ def process_inbound_udp(sock: simsocket.SimSocket):
                     # cur_session.timer = time.time()  # start_timer
                     cur_session.next_seq += 1
                     # print('next_seq',cur_session.next_seq)
-
-        # 判断是否为3个冗余ACK
-        if duplicate_ACK.get(current_chunkhash_str).get(ack_num) is not None:
-            num = duplicate_ACK.get(current_chunkhash_str).get(ack_num) + 1
-            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, num + 1)
-        else:
-            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, 1)
-
-        if duplicate_ACK.get(current_chunkhash_str).get(ack_num) >= 3:
-            duplicate_ACK.get(current_chunkhash_str).setdefault(ack_num, 0)
-            data_header = struct.pack(PACKET_FORMAT, 52305, 35, 3, HEADER_LEN,
-                                          HEADER_LEN + len(current_chunkhash_byte) + len(next_data),
-                                          ack_num, 0)
-            left = (ack_num - 1) * MAX_PAYLOAD
-            right = min((ack_num) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
-            next_data = config.haschunks[current_chunkhash_str][left: right]
-            sock.sendto(data_header + current_chunkhash_byte + next_data, from_addr)
-            # sock.add_log('ack_num: {}'.format(ack_num))
-            cur_session.congestion_control(True)
-        else:
-            cur_session.congestion_control(False)
 
 
 
