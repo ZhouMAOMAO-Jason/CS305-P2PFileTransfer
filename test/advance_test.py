@@ -129,6 +129,7 @@ def check_target_result(target_file, result_file):
 
     with open(result_file, "rb") as rf:
         result_fragments = pickle.load(rf)
+    print(result_fragments.keys())
 
     for th in target_hash:
         assert th in result_fragments, f"download hash mismatch for target {target_file}, target: {th}, has: {result_fragments.keys()}"

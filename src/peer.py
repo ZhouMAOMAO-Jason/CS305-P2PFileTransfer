@@ -41,6 +41,8 @@ received_chunks_acks: Dict[str, int] = dict()
 # 是否收到冗余的ACK {chunkhash: {sequence: number}}
 duplicate_ACK: Dict[str, Dict[int, int]] = dict()
 
+
+
 # 当前传输的包的最后一次传输时间
 recv_time: Dict[str, float] = dict()
 
@@ -58,7 +60,6 @@ class SenderSession:
         self.base = 1
         self.next_seq = 1
         self.buffer = []
-        self.timer = 0
         self.timeout_interval = 2.5
         self.estimatedRTT = 1.5
         self.devRTT = 0
@@ -209,13 +210,16 @@ class ReceiverSession:
 # {(chunkhash, ip, port): sender_session}
 sender_sessions: Dict[Tuple[str, str, int], SenderSession] = {}
 
-
+cur_download_num = 0
 
 def process_download(sock: simsocket.SimSocket, chunkfile: str, outputfile: str):
     '''
     if DOWNLOAD is used, the peer will keep getting files until it is done
     '''
     global download_filenames
+    global cur_download_num
+
+    cur_download_num = 0
 
     content = ''
 
@@ -223,11 +227,20 @@ def process_download(sock: simsocket.SimSocket, chunkfile: str, outputfile: str)
         content = cf.readlines()
 
     # 有多个download_hash的情况
-
+    sock.add_log("self own: {}".format(config.haschunks.keys()))
     for line in content:
-        index, datahash_str = line.strip().split(" ")
 
+        cur_download_num += 1
+        index, datahash_str = line.strip().split(" ")
+        sock.add_log("datahash_str from split line: {}".format(datahash_str))
         download_filenames[datahash_str] = outputfile
+
+        if datahash_str in config.haschunks:
+            sock.add_log("existed chunk no need request : {}".format(datahash_str))
+            final_received_chunks[datahash_str] = config.haschunks[datahash_str]
+            continue
+
+
 
         datahash = bytes.fromhex(datahash_str)
         whohas_header = struct.pack(
@@ -240,6 +253,7 @@ def process_download(sock: simsocket.SimSocket, chunkfile: str, outputfile: str)
             id, host, port = p
             if int(id) != config.identity:
                 sock.sendto(whohas_pkt, (host, int(port)))
+                sock.add_log("whohas_chunkhash_str : {}".format(datahash_str))
 
 
 def process_inbound_udp(sock: simsocket.SimSocket):
@@ -249,6 +263,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
     global received_chunks_acks
     global duplicate_ACK
     global recv_time
+    global cur_download_num
     # 收到包
     pkt, from_addr = sock.recvfrom(BUF_SIZE)
     ip, port = from_addr
@@ -299,8 +314,6 @@ def process_inbound_udp(sock: simsocket.SimSocket):
 
         if timeout != 0:
             new_sender_session.timeout_interval = timeout
-        else:
-            new_sender_session.timeout_interval = 1
 
         sender_sessions[(current_chunkhash_str, ip, port)] = new_sender_session
         sender_sessions[(current_chunkhash_str, ip, port)].timer = time.time()
@@ -323,11 +336,15 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         # 收到DATA
         # 如果当前序列号为Seq的包已经被收过了
         # print('received_chunks_data: ', received_chunks_data[current_chunkhash_str])
+        sock.add_log("rcv_chunkhash_str : {}".format(current_chunkhash_str))
         recv_time[current_chunkhash_str] = time.time()
-        # if current_chunkhash_str not in received_chunks_data:
-        #     received_chunks_data[current_chunkhash_str] = dict()
-        #     received_chunks_acks[current_chunkhash_str] = 1
+        if current_chunkhash_str not in received_chunks_data:
+            sock.add_log("wrong_chunkhash_str : {}".format(current_chunkhash_str))
+            # received_chunks_data[current_chunkhash_str] = dict()
+            # received_chunks_acks[current_chunkhash_str] = 1
         if Seq not in received_chunks_data[current_chunkhash_str]:
+            if (len(data)!=1024):
+                sock.add_log("wrong1024 : {}".format(Seq))
             received_chunks_data[current_chunkhash_str][Seq] = data
 
         # 更新当前acknum(累计ack)
@@ -349,8 +366,14 @@ def process_inbound_udp(sock: simsocket.SimSocket):
         for seq, packet_data in all_packets.items():
             total_len += len(packet_data)
 
-        # print('total_len: ', total_len)
+        sock.add_log("total_len : {}".format(total_len/1024))
+        sock.add_log("data: {}".format(sorted(received_chunks_data[current_chunkhash_str].keys())))
+        sock.add_log("ing_final_received_chunks:{}".format(final_received_chunks.keys()))
+        sock.add_log("ing_cur_download_num:{}".format(cur_download_num))
+
         if total_len == CHUNK_DATA_SIZE:
+            sock.add_log("完成接受")
+            sock.add_log("chunk:{}".format(current_chunkhash_str))
             # 先按照seq顺序将data拼接好
             final_data = bytes()
             sorted_packets = sorted(received_chunks_data[current_chunkhash_str])
@@ -358,8 +381,15 @@ def process_inbound_udp(sock: simsocket.SimSocket):
                 final_data += received_chunks_data[current_chunkhash_str][seq]
             # 保存下载文件
             final_received_chunks[current_chunkhash_str] = final_data
-            with open(download_filenames[current_chunkhash_str], "wb") as wf:
-                pickle.dump(final_received_chunks, wf)
+            cur_download_num -= 1
+            sock.add_log("new_final_received_chunks:{}".format(final_received_chunks.keys()))
+            sock.add_log("new_cur_download_num:{}".format(cur_download_num))
+            if cur_download_num == 0:
+                sock.add_log("zero?_cur_download_num:{}".format(cur_download_num))
+                sock.add_log("zero?_final_received_chunks:{}".format(final_received_chunks.keys()))
+                with open(download_filenames[current_chunkhash_str], "wb") as wf:
+                    pickle.dump(final_received_chunks, wf)
+                del final_received_chunks[current_chunkhash_str]
 
             # 将该文件加入到 haschunks中
             config.haschunks[current_chunkhash_str] = final_data
@@ -369,12 +399,14 @@ def process_inbound_udp(sock: simsocket.SimSocket):
             del received_chunks_acks[current_chunkhash_str]
             del recv_time[current_chunkhash_str]
 
+
             # print(f"GOT {download_filenames[current_chunkhash_str]}")
             # del download_filenames[current_chunkhash_str]
 
             sha1 = hashlib.sha1()
             sha1.update(final_data)
             received_chunkhash_str = sha1.hexdigest()
+            sock.add_log("cal_hash : {}".format(received_chunkhash_str))
             # print(f"Expected chunkhash: {current_chunkhash_str}")
             # print(f"Received chunkhash: {received_chunkhash_str}")
             success = current_chunkhash_str == received_chunkhash_str
@@ -385,6 +417,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
             #     print("Example fails. Please check the example files carefully.")
     elif Type == 4:
         # 收到ACK
+
         cur_session = sender_sessions[(current_chunkhash_str, ip, port)]
         receive_time = time.time()
         # 重新计算超时时间
@@ -414,7 +447,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
             cur_session.OK = True
         else:
             if cur_session.window[1] == 1:
-                cur_session.timer = time.time()
+                # cur_session.timer = time.time()
                 x = 0
                 for i in range(1, len(cur_session.window)):  # 看看window的情况
                     if cur_session.window[i] == 1:
@@ -524,29 +557,32 @@ def peer_run(config: bt_utils.BtConfig):
                 pass
             for (chunkhash_str, ip, port), curr in sender_sessions.items():  # 这里将来要改
                 if curr.OK == False:
-                    time_cost = time.time() - curr.timer
-                    # print(curr.next_seq)
-                    if (time_cost > curr.timeout_interval):
-                        sock.add_log("触发超时重传")
-                        sock.add_log("time : {}".format(time_cost))
-                        # curr.timeout_interval = 2.5 #要改
-                        curr.timer = time.time()
-                        left = (curr.base) * MAX_PAYLOAD
-                        right = min((curr.base + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
-                        next_data = config.haschunks[chunkhash_str][left: right]
-                        chunkhash_byte = bytes.fromhex(chunkhash_str)
-                        # 发送下一节数据
-                        data_header = struct.pack(PACKET_FORMAT, 52305, 35, 3, HEADER_LEN,
-                                                  HEADER_LEN + len(chunkhash_byte) + len(next_data),
-                                                  curr.base, 0)
-                        sock.sendto(data_header + chunkhash_byte + next_data, (ip, port))  ###这里将来要改
-                        cur_session = sender_sessions[(chunkhash_str, ip, port)]
-                        cur_session.congestion_control(True)
+                    for seq, time_r in curr.time_record.items():
+                        if seq >= curr.base:
+                            time_cost = time.time() - time_r
+                            # print(curr.next_seq)
+                            if (time_cost > curr.timeout_interval):
+                                sock.add_log("触发超时重传")
+                                sock.add_log("time : {}".format(time_cost))
+                                sock.add_log("timeout : {}".format(curr.timeout_interval))
+                                # curr.timeout_interval = 2.5 #要改
+                                curr.time_record[seq] = time.time()
+                                left = (seq-1) * MAX_PAYLOAD
+                                right = min(seq * MAX_PAYLOAD, CHUNK_DATA_SIZE)
+                                next_data = config.haschunks[chunkhash_str][left: right]
+                                chunkhash_byte = bytes.fromhex(chunkhash_str)
+                                # 发送下一节数据
+                                data_header = struct.pack(PACKET_FORMAT, 52305, 35, 3, HEADER_LEN,
+                                                          HEADER_LEN + len(chunkhash_byte) + len(next_data),
+                                                          seq, 0)
+                                sock.sendto(data_header + chunkhash_byte + next_data, (ip, port))  ###这里将来要改
+                                cur_session = sender_sessions[(chunkhash_str, ip, port)]
+                                cur_session.congestion_control(True)
 
             # 一段时间内没有接收到新的包，就重新发送whohas请求
             for cur_chunkhash_str in list(recv_time.keys()):
                 if time.time() - recv_time[cur_chunkhash_str] > 10:
-                    sock.add_log("重新请求")
+                    sock.add_log("重新请求"+cur_chunkhash_str)
                     del recv_time[cur_chunkhash_str]
                     del received_chunks_data[cur_chunkhash_str]
                     del received_chunks_acks[cur_chunkhash_str]
