@@ -17,7 +17,7 @@ data4-2.fragment: chunk2
 
 This testing script is equivalent to run the following commands in different shells (remember to export SIMULATOR in each shell):
 
-perl util/hupsim.pl -m test/tmp4/topo3.map -n test/tmp4/nodes4.map -p {port_number} -v 3
+perl util/hupsim.pl -m test/tmp4/topo4.map -n test/tmp4/nodes4.map -p {port_number} -v 3
 
 
 python3 src/peer.py -p test/tmp4/nodes4.map -c test/tmp4/data4-1.fragment -m 100 -i 1

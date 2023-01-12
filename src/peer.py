@@ -2,6 +2,7 @@ import copy
 import sys
 import os
 import time
+import matplotlib.pyplot as plt
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import select
@@ -41,6 +42,9 @@ received_chunks_acks: Dict[str, int] = dict()
 # 是否收到冗余的ACK {chunkhash: {sequence: number}}
 duplicate_ACK: Dict[str, Dict[int, int]] = dict()
 
+# 记录窗口大小变化
+win_time: Dict[float, int] = dict()
+
 is_downloading = False
 
 # 当前传输的包的最后一次传输时间
@@ -67,6 +71,7 @@ class SenderSession:
         self.beta = 0.25
         self.congestion = False
         self.OK = False
+        self.float_size = 20.0
 
     def congestion_control(self, re_transmit):
         # 要先判断收到的包是不是duplicate的，以及是否传输超时
@@ -75,10 +80,12 @@ class SenderSession:
             if re_transmit:
                 self.ssthresh = max(self.window_size // 2, 2)
                 self.window_size = 1
+                self.float_size = 1.0
                 self.window = [0, self.window[1]]
             # 正常情况
             elif self.window_size < self.ssthresh:
                 self.window_size += 1
+                self.float_size += 1
                 self.window = self.window + [0]
             else:
                 self.congestion = True
@@ -87,11 +94,19 @@ class SenderSession:
             if re_transmit:
                 self.ssthresh = max(self.window_size // 2, 2)
                 self.window_size = 1
+                self.float_size = 1.0
                 self.window = [0, self.window[1]]
                 self.congestion = False
             elif self.window_size < self.ssthresh:
                 self.window_size += 1
-                self.window = [0] + self.window[1: self.window_size + 1]
+                self.float_size += 1
+                self.window = self.window[: self.window_size] + [0]
+            else:
+                self.float_size += 1 / self.window_size
+                if self.float_size > self.window_size + 1:
+                    self.window_size += 1
+                    self.window = self.window[: self.window_size] + [0]
+                    
 
     def rdt_send(self):
         if (self.next_seq < self.base + self.window_size):
@@ -210,6 +225,18 @@ class ReceiverSession:
 sender_sessions: Dict[Tuple[str, str, int], SenderSession] = {}
 
 cur_download_num = 0
+
+
+def win_vis():
+    global win_time
+    x = []
+    y = []
+    for t in win_time:
+        x.append(t)
+        y.append(win_time[t])
+    plt.plot(x ,y)
+    plt.title("Window size over time")
+    plt.savefig("win_vis.png")
 
 
 def process_download(sock: simsocket.SimSocket, chunkfile: str, outputfile: str):
@@ -424,6 +451,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
 
         cur_session = sender_sessions[(current_chunkhash_str, ip, port)]
         receive_time = time.time()
+        win_time[time.time()] = cur_session.window_size
         # 重新计算超时时间
         sampleRTT = receive_time - cur_session.time_record[Seq]
         cur_session.estimatedRTT = (1 - cur_session.alpha) * cur_session.estimatedRTT + \
@@ -449,6 +477,8 @@ def process_inbound_udp(sock: simsocket.SimSocket):
             # 完成发送
             # print(f"finished sending {current_chunkhash_str}")
             cur_session.OK = True
+            # 画图
+            win_vis()
         else:
             if cur_session.window[1] == 1:
                 # cur_session.timer = time.time()
@@ -570,7 +600,7 @@ def peer_run(config: bt_utils.BtConfig):
                                 sock.add_log("触发超时重传")
                                 sock.add_log("time : {}".format(time_cost))
                                 sock.add_log("timeout : {}".format(curr.timeout_interval))
-                                # curr.timeout_interval = 2.5 #要改
+                                curr.timeout_interval = 2.5 #要改
                                 curr.time_record[seq] = time.time()
                                 left = (seq - 1) * MAX_PAYLOAD
                                 right = min(seq * MAX_PAYLOAD, CHUNK_DATA_SIZE)
