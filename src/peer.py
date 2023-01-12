@@ -401,6 +401,7 @@ def process_inbound_udp(sock: simsocket.SimSocket):
             sock.add_log("data: {}".format(sorted(received_chunks_data[current_chunkhash_str].keys())))
             sock.add_log("ing_final_received_chunks:{}".format(final_received_chunks.keys()))
 
+
             if total_len == CHUNK_DATA_SIZE:
                 sock.add_log("完成接受")
                 sock.add_log("chunk:{}".format(current_chunkhash_str))
@@ -411,8 +412,8 @@ def process_inbound_udp(sock: simsocket.SimSocket):
                     final_data += received_chunks_data[current_chunkhash_str][seq]
                 # 保存下载文件
                 final_received_chunks[current_chunkhash_str] = final_data
-
                 sock.add_log("new_final_received_chunks:{}".format(final_received_chunks.keys()))
+                chunks_ok[current_chunkhash_str] = True
                 have_snd_all = True
                 for chunk_str, ok in chunks_ok.items():
                     have_snd_all = have_snd_all and ok
@@ -432,7 +433,6 @@ def process_inbound_udp(sock: simsocket.SimSocket):
                 # del received_chunks_acks[current_chunkhash_str]
                 received_chunks_data[current_chunkhash_str] = dict()
                 received_chunks_acks[current_chunkhash_str] = 1
-                chunks_ok[current_chunkhash_str] = True
                 del recv_time[current_chunkhash_str]
 
                 # print(f"GOT {download_filenames[current_chunkhash_str]}")
